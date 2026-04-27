@@ -1,0 +1,15 @@
+[Unit]
+Description=Elastic Alert Triage MCP Server
+After=network.target elasticsearch.service
+
+[Service]
+Type=simple
+User=elastic
+WorkingDirectory=/opt/elastic-triage
+EnvironmentFile=/opt/elastic-triage/.env
+ExecStart=/usr/bin/python3 server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

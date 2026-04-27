@@ -1,0 +1,46 @@
+# Asset inventory. Copy to assets.yml and edit for your environment.
+# Hostname keys are case-insensitive. All fields except the key are optional;
+# the more you fill in, the better Claude can judge alert context.
+
+hosts:
+  WIN-DC01:
+    criticality: critical          # critical | high | medium | low
+    environment: production        # production | staging | dev
+    role: domain_controller
+    os: Windows Server 2022
+    owner: infra-team@example.com
+    tags: [tier-0, domain-controller, never-internet-facing]
+    notes: >
+      Primary domain controller. PowerShell with -enc on this host is
+      almost always malicious; legitimate admin work uses signed scripts
+      via JEA endpoints.
+
+  WIN-FILE-02:
+    criticality: high
+    environment: production
+    role: file_server
+    os: Windows Server 2019
+    owner: infra-team@example.com
+    tags: [tier-1]
+
+  ubuntu-edge-03:
+    criticality: medium
+    environment: production
+    role: edge_proxy
+    os: Ubuntu 22.04
+    owner: platform@example.com
+    tags: [internet-facing, dmz]
+    notes: >
+      Reverse proxy. Outbound to public IPs is normal; outbound to
+      uncommon countries or Tor is not.
+
+  dev-laptop-jdoe:
+    criticality: low
+    environment: dev
+    role: developer_workstation
+    os: macOS 14
+    owner: jdoe@example.com
+    tags: [developer]
+    notes: >
+      Developer machine. Expect noisy alerts from build tools, package
+      managers, and local container runtimes.

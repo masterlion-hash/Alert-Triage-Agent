@@ -1,0 +1,13 @@
+# Core
+mcp[cli]>=1.2.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+python-dotenv>=1.0.1
+pyyaml>=6.0
+
+# AI backends — install only what you need:
+#   Claude:         pip install anthropic
+#   Ollama:         no extra package needed (uses httpx)
+#   OpenAI-compat:  no extra package needed (uses httpx)
+anthropic>=0.40.0

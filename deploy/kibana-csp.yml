@@ -1,0 +1,15 @@
+# Add these lines to /etc/kibana/kibana.yml (or /opt/kibana/config/kibana.yml)
+# They allow the triage panel to be embedded as an iframe inside Kibana Canvas.
+
+csp.rules:
+  - "default-src 'self'"
+  - "font-src 'self' data:"
+  - "style-src 'self' 'unsafe-inline'"
+  - "script-src 'self' 'unsafe-eval' 'unsafe-inline'"
+  - "frame-src 'self' http://<TRIAGE_HOST>:<PORT>"
+  - "worker-src blob: 'self'"
+  - "img-src 'self' data: blob:"
+
+# Also disable the clickjacking header so Kibana itself can host the iframe
+server.customResponseHeaders:
+  X-Content-Type-Options: "nosniff"
