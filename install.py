@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -303,6 +304,61 @@ MODELS = [
 ]
 
 
+# ── Claude model catalogue ────────────────────────────────────────────────────
+#
+# (model_id, display_label, prose, can_do, cant_do)
+#
+CLAUDE_MODELS = [
+    (
+        "claude-haiku-4-5-20251001",
+        "Claude Haiku 4.5  (fastest, lowest cost)",
+        "Fast and very cost-efficient. Ideal for high-volume SOC environments "
+        "where you're triaging dozens of alerts per hour. Handles structured "
+        "triage reliably — just don't expect the deepest reasoning on edge cases.",
+        [
+            "Quick, reliable classification of all common alert types",
+            "Clear structured verdicts with actionable next steps",
+            "Good correlation of host context with alert signals",
+            "Efficient for bulk triage workflows",
+        ],
+        [
+            "Very complex multi-stage APT campaigns may warrant Sonnet/Opus",
+        ],
+    ),
+    (
+        "claude-sonnet-4-6",
+        "Claude Sonnet 4.6  (best balance — recommended)",
+        "The sweet spot: strong security reasoning at moderate speed and cost. "
+        "The recommended choice for most SOC environments. Handles the full "
+        "range of triage scenarios with high accuracy.",
+        [
+            "Deep analysis of multi-step attack chains",
+            "Detailed threat narrative and timeline reconstruction",
+            "Strong MITRE ATT&CK tactic/technique mapping",
+            "Nuanced handling of ambiguous or low-signal alerts",
+            "Proactive threat hunting suggestions",
+        ],
+        [],
+    ),
+    (
+        "claude-opus-4-7",
+        "Claude Opus 4.7  (highest quality, slowest)",
+        "Anthropic's most capable model. Use when verdict quality is paramount "
+        "— high-profile incidents, red team analysis, or any situation where "
+        "you need the most thorough investigation possible.",
+        [
+            "Exceptional depth of reasoning on complex attack chains",
+            "Handles novel and sophisticated TTPs reliably",
+            "Best for high-stakes or highly ambiguous investigations",
+            "Rich, detailed reports with full confidence justification",
+        ],
+        [
+            "Slower per-verdict and higher cost — overkill for routine triage",
+        ],
+    ),
+]
+
+
 def _recommend_tag(ram_gb: float, has_gpu: bool) -> str:
     effective = ram_gb * 1.4 if has_gpu else ram_gb
     best = MODELS[0][1]
@@ -525,6 +581,42 @@ def _test_elastic(url: str, user: str, pwd: str, verify: bool) -> tuple[bool, st
         return False, str(exc)
 
 
+def _test_claude(api_key: str, model: str) -> tuple[bool, str]:
+    """Validate an Anthropic API key with a minimal HTTP request (no SDK needed)."""
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 5,
+        "messages": [{"role": "user", "content": "ping"}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, context=ssl.create_default_context(),
+                                    timeout=15) as r:
+            json.loads(r.read())
+            return True, "API key valid"
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", {}).get("message", str(e))
+        except Exception:
+            msg = str(e)
+        if e.code == 401:
+            return False, f"Invalid API key — {msg}"
+        if e.code == 404:
+            return False, f"Model '{model}' not found"
+        return False, f"HTTP {e.code}: {msg}"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def setup_elastic() -> dict[str, str]:
     hdr("Elasticsearch")
     print(f"   {dim('Enter the details of your Elastic Security / SIEM cluster.')}\n")
@@ -552,6 +644,81 @@ def setup_elastic() -> dict[str, str]:
     return env
 
 
+# ── Claude helpers ────────────────────────────────────────────────────────────
+
+def _print_claude_capabilities(model_id: str) -> None:
+    entry = next((e for e in CLAUDE_MODELS if e[0] == model_id), None)
+    if not entry:
+        return
+
+    _, label, prose, can_do, cant_do = entry
+
+    print()
+    print(f"  {bold(cyan('About  ') + bold(label))}")
+    print()
+
+    words, line = prose.split(), ""
+    for w in words:
+        if len(line) + len(w) + 1 > 68:
+            print(f"  {dim(line)}")
+            line = w
+        else:
+            line = (line + " " + w).strip()
+    if line:
+        print(f"  {dim(line)}")
+
+    print()
+    print(f"  {green('What it handles well:')}")
+    for item in can_do:
+        print(f"    {green('+')}  {item}")
+
+    if cant_do:
+        print()
+        print(f"  {yellow('Where it may fall short:')}")
+        for item in cant_do:
+            print(f"    {yellow('-')}  {item}")
+
+    print()
+    print(f"  {dim('No local hardware requirements — runs entirely in Anthropic cloud.')}")
+    print(f"  {dim('Usage is billed per token. See: https://anthropic.com/pricing')}")
+
+
+def _setup_claude_ai(env: dict[str, str]) -> None:
+    hdr("Anthropic Claude  (cloud AI)")
+    print(f"   {dim('Claude runs in the cloud — no GPU or large RAM needed locally.')}")
+    print(f"   {dim('You need an Anthropic API key from console.anthropic.com.')}")
+    print(f"   {dim('The anthropic SDK is included in requirements.txt and will be')}")
+    print(f"   {dim('installed automatically as part of the Python environment setup.')}\n")
+
+    # Model selection
+    hdr("Choose your Claude model")
+    options = [(mid, label) for mid, label, *_ in CLAUDE_MODELS]
+    chosen = ask_menu("Model", options, default="claude-sonnet-4-6")
+    env["CLAUDE_MODEL"] = chosen
+
+    _print_claude_capabilities(chosen)
+    print()
+
+    # API key
+    hdr("Anthropic API key")
+    print(f"   {dim('Get your key at: https://console.anthropic.com/settings/api-keys')}\n")
+
+    while True:
+        api_key = ask("API key", secret=True)
+        print(f"\n   Testing key …", end=" ", flush=True)
+        ok_flag, detail = _test_claude(api_key, chosen)
+        if ok_flag:
+            print(green(f"valid"))
+            env["ANTHROPIC_API_KEY"] = api_key
+            break
+        else:
+            print(yellow(f"failed — {detail}"))
+            if not ask_yn("Try a different key?", default=True):
+                env["ANTHROPIC_API_KEY"] = api_key
+                warn("Continuing with unverified key — check it before starting the server.")
+                break
+
+
 # ── AI backend ────────────────────────────────────────────────────────────────
 
 def setup_ai(sysinfo: dict, env: dict[str, str]) -> None:
@@ -572,8 +739,7 @@ def setup_ai(sysinfo: dict, env: dict[str, str]) -> None:
     if ai == "ollama":
         _configure_ollama(sysinfo, env)
     elif ai == "claude":
-        env["ANTHROPIC_API_KEY"] = ask("Anthropic API key", secret=True)
-        env["CLAUDE_MODEL"]      = ask("Model", "claude-haiku-4-5-20251001")
+        _setup_claude_ai(env)
     elif ai == "openai_compat":
         env["OPENAI_COMPAT_URL"]   = ask("API base URL", "http://localhost:1234/v1")
         env["OPENAI_COMPAT_KEY"]   = ask("API key (blank if none)", required=False)
@@ -594,8 +760,7 @@ def _configure_ollama(sysinfo: dict, env: dict[str, str]) -> None:
         ], default="none")
         env["AI_PROVIDER"] = fallback
         if fallback == "claude":
-            env["ANTHROPIC_API_KEY"] = ask("Anthropic API key", secret=True)
-            env["CLAUDE_MODEL"]      = ask("Model", "claude-haiku-4-5-20251001")
+            _setup_claude_ai(env)
         elif fallback == "openai_compat":
             env["OPENAI_COMPAT_URL"]   = ask("API base URL", "http://localhost:1234/v1")
             env["OPENAI_COMPAT_KEY"]   = ask("API key (blank if none)", required=False)

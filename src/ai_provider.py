@@ -41,14 +41,21 @@ class _NoProvider:
 
 class _ClaudeProvider:
     def __init__(self, api_key: str, model: str) -> None:
-        self._api_key = api_key
         self._model = model
-
-    async def get_verdict(self, prompt: str) -> str:
+        self._client = None
         try:
             import anthropic
-            client = anthropic.AsyncAnthropic(api_key=self._api_key)
-            msg = await client.messages.create(
+            self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        except ImportError:
+            logger.error(
+                "anthropic package not installed — run: pip install 'anthropic>=0.40.0'"
+            )
+
+    async def get_verdict(self, prompt: str) -> str:
+        if self._client is None:
+            return "[Verdict unavailable: anthropic SDK not installed — pip install anthropic]"
+        try:
+            msg = await self._client.messages.create(
                 model=self._model,
                 max_tokens=1500,
                 system=SYSTEM_PROMPT,
