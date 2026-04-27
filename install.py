@@ -1055,13 +1055,50 @@ def bootstrap() -> None:
 
 # ── Virtual environment ───────────────────────────────────────────────────────
 
+def _create_venv() -> None:
+    """Create .venv, auto-installing python3-venv on Debian/Ubuntu if needed."""
+    r = subprocess.run(
+        [sys.executable, "-m", "venv", str(VENV)],
+        capture_output=True, text=True)
+    if r.returncode == 0:
+        return
+
+    # On Debian/Ubuntu, python3-venv is a separate package.
+    # Detect and install it automatically, then retry.
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    pkg     = f"python{py_ver}-venv"
+    is_apt  = shutil.which("apt-get") is not None
+
+    hint = r.stderr.strip() or r.stdout.strip()
+    if is_apt and ("ensurepip" in hint or "venv" in hint.lower() or r.returncode != 0):
+        print(yellow(f"failed"))
+        print(f"   {dim('Missing')} {bold(pkg)}{dim(' — installing via apt-get…')}")
+        inst = subprocess.run(
+            ["sudo", "apt-get", "install", "-y", pkg],
+            check=False)
+        if inst.returncode != 0:
+            err(
+                f"apt-get install {pkg} failed.\n"
+                f"   Run manually:  sudo apt-get install {pkg}\n"
+                f"   Then re-run the installer."
+            )
+        print(f"   Retrying venv …", end=" ", flush=True)
+        r2 = subprocess.run(
+            [sys.executable, "-m", "venv", str(VENV)],
+            capture_output=True, text=True)
+        if r2.returncode != 0:
+            err(f"venv creation failed even after installing {pkg}:\n{r2.stderr.strip()}")
+    else:
+        err(f"Could not create virtual environment:\n{hint}")
+
+
 def setup_venv() -> None:
     hdr("Python environment")
     if VENV.exists():
         ok(f"Virtual environment exists: {dim(str(VENV))}")
     else:
         print(f"   Creating virtual environment …", end=" ", flush=True)
-        run([sys.executable, "-m", "venv", str(VENV)])
+        _create_venv()
         print(green("done"))
 
     print(f"   Installing dependencies …", end=" ", flush=True)
