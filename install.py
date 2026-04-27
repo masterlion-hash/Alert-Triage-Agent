@@ -1019,7 +1019,16 @@ def bootstrap() -> None:
     target = pathlib.Path(ask("Install directory", str(default_dir)))
 
     if (target / "server.py").exists():
-        ok(f"Repository already present at {target}")
+        # Repo already present — pull latest so re-running the one-liner
+        # always executes the current version of install.py.
+        if shutil.which("git") and (target / ".git").exists():
+            print(f"   Updating repository …", end=" ", flush=True)
+            r = subprocess.run(
+                ["git", "-C", str(target), "pull", "--ff-only", "--quiet"],
+                capture_output=True, text=True)
+            print(green("done") if r.returncode == 0 else yellow("skipped (local changes)"))
+        else:
+            ok(f"Repository already present at {target}")
     else:
         target.mkdir(parents=True, exist_ok=True)
         if shutil.which("git"):
