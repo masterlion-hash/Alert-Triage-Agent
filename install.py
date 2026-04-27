@@ -38,10 +38,25 @@ import urllib.request
 import zipfile
 
 # ── Python version guard ──────────────────────────────────────────────────────
-if sys.version_info < (3, 11):
+# Minimum is 3.10 — required by the MCP SDK and the X | Y union syntax.
+# If the current interpreter is too old, try to find a newer one on PATH
+# and re-exec transparently, so users don't have to figure this out themselves.
+_MIN_PY = (3, 10)
+
+if sys.version_info < _MIN_PY:
+    _candidates = ["python3.13", "python3.12", "python3.11", "python3.10"]
+    for _py in _candidates:
+        _found = shutil.which(_py)
+        if _found:
+            os.execv(_found, [_found] + sys.argv)
+    # Nothing found — give a helpful message
     sys.exit(
-        f"Python 3.11+ required (you have {platform.python_version()}).\n"
-        "Download from https://www.python.org/downloads/"
+        f"Python 3.10+ required (you have {platform.python_version()}).\n\n"
+        "On Ubuntu/Debian:\n"
+        "  sudo apt update && sudo apt install python3.10 -y\n\n"
+        "On RHEL/Fedora:\n"
+        "  sudo dnf install python3.10 -y\n\n"
+        "Or download from https://www.python.org/downloads/"
     )
 
 REPO_URL  = "https://github.com/masterlion-hash/Alert-Triage-Agent"

@@ -57,7 +57,7 @@ python  install.py     # Windows
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.10+ (Ubuntu 22.04 default; if yours is older the installer will try to find a newer one automatically)
 - Elasticsearch 8.x with Kibana Security enabled
 - Read access to the `.alerts-security.alerts-default` index (or your custom index)
 
