@@ -5,31 +5,48 @@
 Alert Triage Agent — one-command installer.
 
 Works on Ubuntu / Debian / RHEL / Windows 10+
+No git required — downloads and installs everything automatically.
 
-    python3 install.py        # Linux / macOS
-    python  install.py        # Windows
+── Linux / macOS ──────────────────────────────────────────────────────────────
+  curl -fsSL https://raw.githubusercontent.com/masterlion-hash/Alert-Triage-Agent/main/install.py -o /tmp/ata.py && python3 /tmp/ata.py
+
+── Windows PowerShell ─────────────────────────────────────────────────────────
+  Invoke-WebRequest https://raw.githubusercontent.com/masterlion-hash/Alert-Triage-Agent/main/install.py -OutFile "$env:TEMP\ata.py"; python "$env:TEMP\ata.py"
+
+── Already cloned ─────────────────────────────────────────────────────────────
+  python3 install.py   (Linux)
+  python  install.py   (Windows)
 """
 
 from __future__ import annotations
 
 import getpass
+import io
 import os
 import pathlib
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 
 # ── Python version guard ──────────────────────────────────────────────────────
 if sys.version_info < (3, 11):
-    sys.exit(f"Python 3.11+ required (you have {platform.python_version()}). "
-             "Download from https://python.org")
+    sys.exit(
+        f"Python 3.11+ required (you have {platform.python_version()}).\n"
+        "Download from https://www.python.org/downloads/"
+    )
 
-ROOT    = pathlib.Path(__file__).parent.resolve()
-IS_WIN  = platform.system() == "Windows"
-VENV    = ROOT / (".venv" if not IS_WIN else ".venv")
-VENV_PY = VENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
-VENV_PIP= VENV / ("Scripts/pip.exe"    if IS_WIN else "bin/pip")
+REPO_URL  = "https://github.com/masterlion-hash/Alert-Triage-Agent"
+REPO_ZIP  = f"{REPO_URL}/archive/refs/heads/main.zip"
+
+ROOT     = pathlib.Path(__file__).resolve().parent
+IS_WIN   = platform.system() == "Windows"
+VENV     = ROOT / ".venv"
+VENV_PY  = VENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
+VENV_PIP = VENV / ("Scripts/pip.exe"    if IS_WIN else "bin/pip")
 
 # ── Colour helpers (no deps) ──────────────────────────────────────────────────
 _TTY = sys.stdout.isatty()
@@ -45,29 +62,27 @@ def red(t):    return _c("91", t)
 def cyan(t):   return _c("96", t)
 def blue(t):   return _c("94", t)
 
-def ok(m):   print(f"  {green('✔')}  {m}")
-def warn(m): print(f"  {yellow('!')}  {m}")
-def err(m):  print(f"  {red('✘')}  {m}"); sys.exit(1)
+def ok(m):   print(f"  {green('ok')}  {m}")
+def warn(m): print(f"  {yellow('!!')}  {m}")
+def err(m):  print(f"  {red('ERR')}  {m}"); sys.exit(1)
 def hdr(t):  print(f"\n{bold(blue('──'))} {bold(t)}")
+
 
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
 def ask(label: str, default: str = "", secret: bool = False,
         required: bool = True) -> str:
-    hint = f" {dim('[' + default + ']')}" if default else ""
+    hint   = f" {dim('[' + default + ']')}" if default else ""
     prompt = f"   {bold(label)}{hint}: "
     while True:
         try:
             val = getpass.getpass(prompt) if secret else input(prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print(); raise
-        if val:
-            return val
-        if default:
-            return default
-        if not required:
-            return ""
-        print(f"   {red('Required — please enter a value.')}")
+        if val:         return val
+        if default:     return default
+        if not required:return ""
+        print(f"   {red('Required.')}")
 
 
 def ask_yn(label: str, default: bool = True) -> bool:
@@ -96,27 +111,26 @@ def ask_menu(label: str, options: list[tuple[str, str]],
             return options[int(dflt_n) - 1][0]
         if raw.isdigit() and 1 <= int(raw) <= len(options):
             return options[int(raw) - 1][0]
-        print(f"   {red('Enter a number 1–' + str(len(options)))}")
+        print(f"   {red('Enter 1–' + str(len(options)))} ")
 
 
 # ── System helpers ────────────────────────────────────────────────────────────
 
-def run(cmd: list[str], check: bool = True, capture: bool = True) -> str:
-    r = subprocess.run(cmd, capture_output=capture,
-                       text=True, check=False)
+def run(cmd: list[str], check: bool = True) -> str:
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if check and r.returncode != 0:
         err(f"Command failed: {' '.join(cmd)}\n{r.stderr.strip()}")
     return (r.stdout or "").strip()
 
 
-def pip(*args: str) -> None:
+def pip_install(*args: str) -> None:
     run([str(VENV_PIP), "install", "-q", *args])
 
 
 def test_elastic(url: str, user: str, pwd: str,
                  verify: bool) -> tuple[bool, str]:
     try:
-        import urllib.request, urllib.error, ssl, base64, json
+        import base64, json, ssl
         creds = base64.b64encode(f"{user}:{pwd}".encode()).decode()
         req   = urllib.request.Request(
             url.rstrip("/") + "/_cluster/health",
@@ -124,49 +138,113 @@ def test_elastic(url: str, user: str, pwd: str,
         ctx = ssl.create_default_context()
         if not verify:
             ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            ctx.verify_mode    = ssl.CERT_NONE
         with urllib.request.urlopen(req, context=ctx, timeout=8) as r:
-            return True, json.loads(r.read()).get("status", "green")
+            return True, __import__("json").loads(r.read()).get("status","?")
     except Exception as exc:
         return False, str(exc)
 
 
 def test_ollama(url: str) -> tuple[bool, str]:
     try:
-        import urllib.request, json
-        with urllib.request.urlopen(url.rstrip("/") + "/api/tags",
-                                    timeout=5) as r:
-            models = [m["name"] for m in json.loads(r.read()).get("models", [])]
+        with urllib.request.urlopen(
+                url.rstrip("/") + "/api/tags", timeout=5) as r:
+            models = [m["name"] for m in
+                      __import__("json").loads(r.read()).get("models", [])]
             return True, ", ".join(models[:4]) or "no models pulled yet"
     except Exception as exc:
         return False, str(exc)
 
 
-# ── Step 1 — virtual environment ──────────────────────────────────────────────
+# ── Bootstrap: download repo when running outside the project ─────────────────
+
+def _download_zip(target: pathlib.Path) -> None:
+    print(f"   Downloading from GitHub …", end=" ", flush=True)
+    try:
+        with urllib.request.urlopen(REPO_ZIP, timeout=60) as r:
+            data = r.read()
+    except Exception as exc:
+        err(f"Download failed: {exc}")
+    print(green("done"))
+
+    print(f"   Extracting …", end=" ", flush=True)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        top = zf.namelist()[0].split("/")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            zf.extractall(tmp)
+            extracted = pathlib.Path(tmp) / top
+            for item in extracted.iterdir():
+                dst = target / item.name
+                if dst.exists():
+                    shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
+                shutil.move(str(item), str(dst))
+    print(green("done"))
+
+
+def bootstrap() -> None:
+    """Download the repo and re-exec install.py from it."""
+    hdr("Downloading Alert Triage Agent")
+
+    default_dir = (
+        pathlib.Path(os.environ.get("USERPROFILE", "C:/"))
+        if IS_WIN else pathlib.Path.home()
+    ) / "alert-triage-agent"
+
+    target = pathlib.Path(ask("Install directory", str(default_dir)))
+
+    if (target / "server.py").exists():
+        ok(f"Repository already present at {target}")
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+
+        # Try git clone first, fall back to zip
+        if shutil.which("git"):
+            print(f"   Cloning repository …", end=" ", flush=True)
+            r = subprocess.run(
+                ["git", "clone", "--depth=1", f"{REPO_URL}.git", str(target)],
+                capture_output=True, text=True)
+            if r.returncode == 0:
+                print(green("done"))
+            else:
+                print(yellow("git clone failed, using zip download"))
+                _download_zip(target)
+        else:
+            warn("git not found — downloading zip")
+            _download_zip(target)
+
+    new_script = target / "install.py"
+    if not new_script.exists():
+        err(f"install.py not found in {target} — download may have failed.")
+
+    print(f"\n   Continuing setup in {bold(str(target))} …\n")
+    # Re-exec from the actual project directory
+    os.execv(sys.executable, [sys.executable, str(new_script)])
+
+
+# ── Step 1: virtual environment ───────────────────────────────────────────────
 
 def setup_venv() -> None:
-    hdr("Setting up Python environment")
+    hdr("Python environment")
     if VENV.exists():
-        ok(f"Virtual environment already exists at {dim(str(VENV))}")
+        ok(f"Virtual environment: {dim(str(VENV))}")
     else:
         print(f"   Creating virtual environment …", end=" ", flush=True)
         run([sys.executable, "-m", "venv", str(VENV)])
         print(green("done"))
 
     print(f"   Installing dependencies …", end=" ", flush=True)
-    pip("--upgrade", "pip")
-    pip("-r", str(ROOT / "requirements.txt"))
+    pip_install("--upgrade", "pip")
+    pip_install("-r", str(ROOT / "requirements.txt"))
     print(green("done"))
-    ok("Dependencies installed")
+    ok("Dependencies ready")
 
 
-# ── Step 2 — interactive config wizard ───────────────────────────────────────
+# ── Step 2: config wizard ─────────────────────────────────────────────────────
 
 def run_wizard() -> dict[str, str]:
     env: dict[str, str] = {}
 
-    # ── Elasticsearch ─────────────────────────────────────────────────────
-    hdr("Elasticsearch connection")
+    hdr("Elasticsearch")
     env["ELASTIC_URL"]      = ask("URL", "https://localhost:9200")
     env["ELASTIC_USERNAME"] = ask("Username", "elastic")
     env["ELASTIC_PASSWORD"] = ask("Password", secret=True)
@@ -177,48 +255,41 @@ def run_wizard() -> dict[str, str]:
     env["ELASTIC_TIMEOUT"]  = "30"
 
     print(f"\n   Testing connection …", end=" ", flush=True)
-    ok_conn, status = test_elastic(
+    connected, status = test_elastic(
         env["ELASTIC_URL"], env["ELASTIC_USERNAME"],
         env["ELASTIC_PASSWORD"], verify)
-    if ok_conn:
-        print(green(f"connected  ({status})"))
+    if connected:
+        print(green(f"connected ({status})"))
     else:
         print(yellow(f"unreachable — {status}"))
         if not ask_yn("Continue anyway?", default=True):
             sys.exit(0)
 
-    # ── Threat intel ──────────────────────────────────────────────────────
     hdr("Threat intelligence  (press Enter to skip)")
     env["ABUSEIPDB_API_KEY"]  = ask("AbuseIPDB API key",  required=False)
     env["VIRUSTOTAL_API_KEY"] = ask("VirusTotal API key", required=False)
     env["THREAT_INTEL_TIMEOUT"] = "10"
 
-    # ── AI backend ────────────────────────────────────────────────────────
     hdr("AI verdict backend")
-    ai = ask_menu("Choose", [
-        ("claude",        "Anthropic Claude API — cloud, best quality"),
-        ("ollama",        "Ollama — local/offline LLM (llama3, mistral …)"),
+    ai = ask_menu("Choose backend", [
+        ("claude",        "Anthropic Claude — cloud API"),
+        ("ollama",        "Ollama — local LLM, fully offline"),
         ("openai_compat", "OpenAI-compatible — LM Studio, Groq, vLLM …"),
-        ("none",          "Disabled — no AI verdict"),
+        ("none",          "Disabled"),
     ], default="none")
     env["AI_PROVIDER"] = ai
 
     if ai == "claude":
         env["ANTHROPIC_API_KEY"] = ask("Anthropic API key", secret=True)
-        env["CLAUDE_MODEL"]      = ask("Model",
-                                        "claude-haiku-4-5-20251001")
-
+        env["CLAUDE_MODEL"]      = ask("Model", "claude-haiku-4-5-20251001")
     elif ai == "ollama":
         env["OLLAMA_URL"]   = ask("Ollama URL", "http://localhost:11434")
         env["OLLAMA_MODEL"] = ask("Model name", "llama3.2")
         print(f"\n   Testing Ollama …", end=" ", flush=True)
         up, detail = test_ollama(env["OLLAMA_URL"])
-        if up:
-            print(green(f"online  ({detail})"))
-        else:
-            print(yellow(f"not reachable — {detail}"))
-            warn("Make sure Ollama is running:  ollama serve")
-
+        print(green(f"online ({detail})") if up else yellow(f"unreachable — {detail}"))
+        if not up:
+            warn("Run  ollama serve  before starting the triage server.")
     elif ai == "openai_compat":
         env["OPENAI_COMPAT_URL"]   = ask("API base URL",
                                           "http://localhost:1234/v1")
@@ -226,7 +297,6 @@ def run_wizard() -> dict[str, str]:
                                           required=False)
         env["OPENAI_COMPAT_MODEL"] = ask("Model name", "mistral")
 
-    # ── Server ────────────────────────────────────────────────────────────
     hdr("HTTP server")
     env["HOST"]      = "0.0.0.0"
     env["PORT"]      = ask("Port", "8000")
@@ -236,12 +306,10 @@ def run_wizard() -> dict[str, str]:
     if pub:
         env["PUBLIC_URL"] = pub.rstrip("/")
 
-    # ── Asset inventory ───────────────────────────────────────────────────
     hdr("Asset inventory  (optional)")
-    print(f"   {dim('YAML file mapping hostnames → criticality, owner, role.')}")
-    print(f"   {dim('The AI uses this to give better verdicts.')}\n")
-    asset = ask("Path to assets.yml", "assets.yml", required=False) \
-            or "assets.yml"
+    print(f"   {dim('YAML file: hostnames mapped to criticality, owner, role.')}")
+    print(f"   {dim('Helps the AI give better verdicts.')}\n")
+    asset = ask("Path to assets.yml", "assets.yml", required=False) or "assets.yml"
     env["ASSET_INVENTORY_PATH"] = asset
     if not (ROOT / asset).exists():
         ex = ROOT / "assets.example.yml"
@@ -255,19 +323,20 @@ def run_wizard() -> dict[str, str]:
     return env
 
 
-# ── Step 3 — write .env ───────────────────────────────────────────────────────
+# ── Step 3: write .env ────────────────────────────────────────────────────────
 
-def write_env(env: dict[str, str]) -> pathlib.Path:
-    hdr("Writing configuration")
+def write_env(env: dict[str, str]) -> None:
+    hdr("Writing .env")
     env_path = ROOT / ".env"
-    if env_path.exists() and not ask_yn(
-            ".env already exists. Overwrite?", default=False):
+    if env_path.exists() and not ask_yn(".env already exists. Overwrite?",
+                                        default=False):
         env_path = ROOT / ".env.new"
         warn(f"Writing to {env_path} instead.")
 
     ai = env["AI_PROVIDER"]
-    blocks: list[str] = [
-        "# Alert Triage Agent — generated by install.py\n",
+    lines: list[str] = [
+        "# Alert Triage Agent — generated by install.py",
+        "",
         "# Elasticsearch",
         f"ELASTIC_URL={env['ELASTIC_URL']}",
         f"ELASTIC_USERNAME={env['ELASTIC_USERNAME']}",
@@ -276,25 +345,25 @@ def write_env(env: dict[str, str]) -> pathlib.Path:
         f"ELASTIC_INDEX={env['ELASTIC_INDEX']}",
         f"ELASTIC_TIMEOUT={env['ELASTIC_TIMEOUT']}",
         "",
-        "# Threat intelligence",
+        "# Threat intelligence (leave blank to disable)",
         f"ABUSEIPDB_API_KEY={env.get('ABUSEIPDB_API_KEY','')}",
         f"VIRUSTOTAL_API_KEY={env.get('VIRUSTOTAL_API_KEY','')}",
         f"THREAT_INTEL_TIMEOUT={env['THREAT_INTEL_TIMEOUT']}",
         "",
-        "# AI backend",
+        "# AI backend: claude | ollama | openai_compat | none",
         f"AI_PROVIDER={ai}",
     ]
     if ai == "claude":
-        blocks += [f"ANTHROPIC_API_KEY={env.get('ANTHROPIC_API_KEY','')}",
-                   f"CLAUDE_MODEL={env.get('CLAUDE_MODEL','')}"]
+        lines += [f"ANTHROPIC_API_KEY={env.get('ANTHROPIC_API_KEY','')}",
+                  f"CLAUDE_MODEL={env.get('CLAUDE_MODEL','')}"]
     elif ai == "ollama":
-        blocks += [f"OLLAMA_URL={env.get('OLLAMA_URL','')}",
-                   f"OLLAMA_MODEL={env.get('OLLAMA_MODEL','')}"]
+        lines += [f"OLLAMA_URL={env.get('OLLAMA_URL','')}",
+                  f"OLLAMA_MODEL={env.get('OLLAMA_MODEL','')}"]
     elif ai == "openai_compat":
-        blocks += [f"OPENAI_COMPAT_URL={env.get('OPENAI_COMPAT_URL','')}",
-                   f"OPENAI_COMPAT_KEY={env.get('OPENAI_COMPAT_KEY','')}",
-                   f"OPENAI_COMPAT_MODEL={env.get('OPENAI_COMPAT_MODEL','')}"]
-    blocks += [
+        lines += [f"OPENAI_COMPAT_URL={env.get('OPENAI_COMPAT_URL','')}",
+                  f"OPENAI_COMPAT_KEY={env.get('OPENAI_COMPAT_KEY','')}",
+                  f"OPENAI_COMPAT_MODEL={env.get('OPENAI_COMPAT_MODEL','')}"]
+    lines += [
         "",
         "# Server",
         f"HOST={env['HOST']}",
@@ -302,8 +371,8 @@ def write_env(env: dict[str, str]) -> pathlib.Path:
         f"LOG_LEVEL={env['LOG_LEVEL']}",
     ]
     if env.get("PUBLIC_URL"):
-        blocks.append(f"PUBLIC_URL={env['PUBLIC_URL']}")
-    blocks += [
+        lines.append(f"PUBLIC_URL={env['PUBLIC_URL']}")
+    lines += [
         "",
         "# Asset inventory",
         f"ASSET_INVENTORY_PATH={env['ASSET_INVENTORY_PATH']}",
@@ -312,144 +381,128 @@ def write_env(env: dict[str, str]) -> pathlib.Path:
         f"RELATED_EVENTS_WINDOW_MIN={env['RELATED_EVENTS_WINDOW_MIN']}",
         f"RELATED_EVENTS_MAX={env['RELATED_EVENTS_MAX']}",
     ]
-    env_path.write_text("\n".join(blocks) + "\n", encoding="utf-8")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ok(f"Written: {bold(str(env_path))}")
-    return env_path
 
 
-# ── Step 4 — start scripts ────────────────────────────────────────────────────
+# ── Step 4: start scripts ─────────────────────────────────────────────────────
 
-def write_start_scripts(port: str) -> None:
-    hdr("Creating start scripts")
-
-    if not IS_WIN:
-        sh = ROOT / "start.sh"
-        sh.write_text(
-            f'#!/usr/bin/env bash\ncd "$(dirname "$0")"\n'
-            f'.venv/bin/python server.py\n', encoding="utf-8")
-        sh.chmod(0o755)
-        ok(f"Created {bold('start.sh')}")
-    else:
+def write_start_scripts() -> None:
+    hdr("Start scripts")
+    if IS_WIN:
         bat = ROOT / "start.bat"
         bat.write_text(
-            f'@echo off\ncd /d "%~dp0"\n'
-            f'.venv\\Scripts\\python server.py\npause\n',
+            '@echo off\ncd /d "%~dp0"\n'
+            '.venv\\Scripts\\python server.py\npause\n',
             encoding="utf-8")
         ok(f"Created {bold('start.bat')}")
+    else:
+        sh = ROOT / "start.sh"
+        sh.write_text(
+            '#!/usr/bin/env bash\nset -e\ncd "$(dirname "$0")"\n'
+            'exec .venv/bin/python server.py\n',
+            encoding="utf-8")
+        sh.chmod(0o755)
+        ok(f"Created {bold('start.sh')}")
 
 
-# ── Step 5 — optional service ─────────────────────────────────────────────────
+# ── Step 5: optional service ──────────────────────────────────────────────────
 
 def install_service(port: str) -> None:
     if not ask_yn("Install as a background service (auto-start on boot)?",
                   default=False):
         return
-
     if IS_WIN:
-        _install_windows_service(port)
+        _task_scheduler(port)
     else:
-        _install_systemd_service(port)
+        _systemd(port)
 
 
-def _install_systemd_service(port: str) -> None:
-    svc_path = pathlib.Path("/etc/systemd/system/alert-triage.service")
-    content  = f"""\
-[Unit]
-Description=Alert Triage Agent
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory={ROOT}
-EnvironmentFile={ROOT}/.env
-ExecStart={VENV_PY} server.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-"""
+def _systemd(port: str) -> None:
+    svc = pathlib.Path("/etc/systemd/system/alert-triage.service")
+    content = (
+        "[Unit]\nDescription=Alert Triage Agent\nAfter=network.target\n\n"
+        "[Service]\nType=simple\n"
+        f"WorkingDirectory={ROOT}\nEnvironmentFile={ROOT}/.env\n"
+        f"ExecStart={VENV_PY} server.py\nRestart=on-failure\nRestartSec=5\n\n"
+        "[Install]\nWantedBy=multi-user.target\n"
+    )
     try:
-        svc_path.write_text(content, encoding="utf-8")
+        svc.write_text(content, encoding="utf-8")
         run(["systemctl", "daemon-reload"])
         run(["systemctl", "enable", "--now", "alert-triage"])
         ok("systemd service installed and started")
-        ok(f"Control:  {cyan('sudo systemctl start|stop|status alert-triage')}")
     except PermissionError:
-        # write to /tmp and give instructions
-        tmp = pathlib.Path("/tmp/alert-triage.service")
+        tmp = pathlib.Path(tempfile.gettempdir()) / "alert-triage.service"
         tmp.write_text(content, encoding="utf-8")
         warn("Need sudo to install the service. Run:")
-        print(f"\n   {cyan('sudo cp /tmp/alert-triage.service /etc/systemd/system/')}")
+        print(f"\n   {cyan(f'sudo cp {tmp} /etc/systemd/system/')}")
         print(f"   {cyan('sudo systemctl daemon-reload')}")
         print(f"   {cyan('sudo systemctl enable --now alert-triage')}\n")
-    except FileNotFoundError:
-        warn("systemctl not found — skipping service install.")
 
 
-def _install_windows_service(port: str) -> None:
-    # Register via Task Scheduler (no admin required for current user)
-    task  = "AlertTriageAgent"
-    cmd   = str(VENV_PY)
-    args  = f'"{ROOT / "server.py"}"'
+def _task_scheduler(port: str) -> None:
+    task = "AlertTriageAgent"
     try:
-        # Remove old task if it exists
-        subprocess.run(
-            ["schtasks", "/Delete", "/TN", task, "/F"],
-            capture_output=True)
+        subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"],
+                       capture_output=True)
         run(["schtasks", "/Create", "/TN", task,
-             "/TR", f'"{cmd}" {args}',
+             "/TR", f'"{VENV_PY}" "{ROOT / "server.py"}"',
              "/SC", "ONLOGON", "/RL", "HIGHEST", "/F"])
-        ok(f"Windows scheduled task '{task}' created (runs at logon)")
-        ok(f"Start now: {cyan('schtasks /Run /TN AlertTriageAgent')}")
+        ok(f"Windows Task Scheduler entry '{task}' created (runs at logon)")
     except Exception as exc:
         warn(f"Could not create scheduled task: {exc}")
         warn(f"Start manually: {cyan('start.bat')}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Banner ────────────────────────────────────────────────────────────────────
 
 def banner() -> None:
     print()
-    print(bold(cyan("  ╔══════════════════════════════════════╗")))
-    print(bold(cyan("  ║   Alert Triage Agent — Installer      ║")))
-    print(bold(cyan("  ╚══════════════════════════════════════╝")))
-    print(f"  Platform : {platform.system()} {platform.release()}")
-    print(f"  Python   : {platform.python_version()}")
-    print(f"  Directory: {ROOT}")
+    print(bold(cyan("  ╔═══════════════════════════════════════╗")))
+    print(bold(cyan("  ║    Alert Triage Agent  —  Installer    ║")))
+    print(bold(cyan("  ╚═══════════════════════════════════════╝")))
+    print(f"  {dim('Platform:')}  {platform.system()} {platform.release()}")
+    print(f"  {dim('Python:')}    {platform.python_version()}")
     print()
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 def main() -> None:
     banner()
+
+    # If server.py is missing we're running standalone — download the repo first
+    if not (ROOT / "server.py").exists():
+        bootstrap()
+        # bootstrap() calls os.execv so execution never continues past this line
+        sys.exit(1)
 
     try:
         setup_venv()
         env = run_wizard()
         write_env(env)
-        write_start_scripts(env["PORT"])
+        write_start_scripts()
         install_service(env["PORT"])
     except KeyboardInterrupt:
-        print(f"\n\n  {yellow('Cancelled.')}")
+        print(f"\n\n  {yellow('Cancelled.')}\n")
         sys.exit(0)
 
-    # ── Done ──────────────────────────────────────────────────────────────
     port    = env["PORT"]
     pub_url = env.get("PUBLIC_URL", "")
 
     print()
-    print(bold(green("  ✔  Setup complete!")))
+    print(bold(green("  Setup complete!")))
     print()
     if IS_WIN:
-        print(f"  Start server :  {cyan('start.bat')}")
+        print(f"  Start server  :  {cyan('start.bat')}")
     else:
-        print(f"  Start server :  {cyan('bash start.sh')}")
-        print(f"                  {dim('or')}  {cyan('.venv/bin/python server.py')}")
+        print(f"  Start server  :  {cyan('bash start.sh')}")
     print()
-    print(f"  Open UI      :  {cyan('http://localhost:' + port)}")
+    print(f"  Open UI       :  {cyan('http://localhost:' + port)}")
     if pub_url:
-        print(f"  Public URL   :  {cyan(pub_url)}")
-    print(f"  MCP endpoint :  {cyan('http://localhost:' + port + '/mcp/mcp')}")
+        print(f"  Public URL    :  {cyan(pub_url)}")
+    print(f"  MCP endpoint  :  {cyan('http://localhost:' + port + '/mcp/mcp')}")
     print()
 
 
