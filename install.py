@@ -1092,14 +1092,51 @@ def _create_venv() -> None:
         err(f"Could not create virtual environment:\n{hint}")
 
 
+def _bootstrap_pip() -> None:
+    """Install pip into the venv when it is missing (Ubuntu ensurepip-disabled case)."""
+    # Try the built-in ensurepip first
+    r = subprocess.run(
+        [str(VENV_PY), "-m", "ensurepip", "--upgrade"],
+        capture_output=True, text=True)
+    if r.returncode == 0 and VENV_PIP.exists():
+        return
+
+    # Fall back to downloading get-pip.py from PyPA
+    try:
+        with urllib.request.urlopen(
+                "https://bootstrap.pypa.io/get-pip.py", timeout=30) as resp:
+            get_pip_src = resp.read()
+    except Exception as exc:
+        err(f"Could not download get-pip.py: {exc}\n"
+            f"   Try manually: sudo apt-get install -y python3-pip")
+
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+        f.write(get_pip_src)
+        tmp_path = f.name
+
+    r = subprocess.run([str(VENV_PY), tmp_path], capture_output=True, text=True)
+    pathlib.Path(tmp_path).unlink(missing_ok=True)
+    if r.returncode != 0 or not VENV_PIP.exists():
+        err(f"pip bootstrap failed:\n{r.stderr.strip()}\n"
+            f"   Try manually: sudo apt-get install -y python3-pip")
+
+
 def setup_venv() -> None:
     hdr("Python environment")
-    if VENV.exists():
+    if VENV.exists() and VENV_PIP.exists():
         ok(f"Virtual environment exists: {dim(str(VENV))}")
     else:
-        print(f"   Creating virtual environment …", end=" ", flush=True)
-        _create_venv()
-        print(green("done"))
+        if not VENV.exists():
+            print(f"   Creating virtual environment …", end=" ", flush=True)
+            _create_venv()
+            print(green("done"))
+        else:
+            ok(f"Virtual environment exists: {dim(str(VENV))}")
+
+        if not VENV_PIP.exists():
+            print(f"   Bootstrapping pip …", end=" ", flush=True)
+            _bootstrap_pip()
+            print(green("done"))
 
     print(f"   Installing dependencies …", end=" ", flush=True)
     pip_install("--upgrade", "pip")
