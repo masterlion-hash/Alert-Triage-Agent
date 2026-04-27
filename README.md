@@ -1,32 +1,59 @@
-# elastic-mcp-triage
+# Alert Triage Agent
 
 AI-assisted alert triage and investigation for Elastic Security.
 Exposes a web UI, a REST API, and an MCP server so any MCP-compatible AI client can investigate alerts directly.
+
+## Install — one command, no git required
+
+**Linux / macOS**
+```bash
+curl -fsSL https://raw.githubusercontent.com/masterlion-hash/Alert-Triage-Agent/main/install.py -o /tmp/ata.py && python3 /tmp/ata.py
+```
+
+**Windows PowerShell**
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/masterlion-hash/Alert-Triage-Agent/main/install.py -OutFile "$env:TEMP\ata.py"; python "$env:TEMP\ata.py"
+```
+
+The installer will:
+1. Check your system (RAM, CPU, disk, GPU)
+2. Download the project if needed — no git required
+3. Create a Python virtual environment and install all dependencies
+4. Ask for your Elasticsearch URL and credentials (and test the connection)
+5. Help you choose and set up an AI backend — Ollama (local) or Anthropic Claude (cloud)
+6. Pull your chosen Ollama model, or validate your Claude API key
+7. Write `.env`, create `start.sh` / `start.bat`, and optionally install as a service
+
+Then start the server:
+
+```bash
+bash start.sh          # Linux / macOS
+start.bat              # Windows
+```
+
+Open `http://localhost:8000`.
+
+---
+
+Already have the repo cloned? Just run:
+
+```bash
+python3 install.py     # Linux / macOS
+python  install.py     # Windows
+```
 
 ## Features
 
 - Live alert feed with filters: severity, host, rule, user, date range
 - One-click investigation: host context, threat intel (AbuseIPDB / VirusTotal), related events, AI verdict
-- Pluggable AI verdict backend — bring your own:
-  - **Anthropic Claude** (cloud API)
-  - **Ollama** — fully local/offline (llama3, mistral, phi3, …)
-  - **Any OpenAI-compatible API** — LM Studio, vLLM, Groq, Together AI, Mistral API, …
+- Pluggable AI verdict backend:
+  - **Anthropic Claude** (cloud API — Haiku, Sonnet, or Opus)
+  - **Ollama** — fully local/offline (Llama 3, Mistral, Phi-3, …) — auto-installed
+  - **Any OpenAI-compatible API** — LM Studio, vLLM, Groq, Together AI, …
   - Disabled — raw investigation report only
 - MCP server at `/mcp/mcp` for Claude.ai, Claude Code, or any MCP client
 - Asset inventory (YAML) for host criticality / owner context
 - MIT licensed, no telemetry
-
-## Quick start
-
-```bash
-git clone https://github.com/your-org/elastic-mcp-triage.git
-cd elastic-mcp-triage
-pip install -r requirements.txt
-python install.py        # interactive setup — asks you everything
-python server.py
-```
-
-Open `http://localhost:8000` (or the port you chose).
 
 ## Requirements
 
@@ -184,4 +211,4 @@ Pull requests are welcome. Open an issue first for large changes.
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2024 elastic-mcp-triage contributors
+[MIT](LICENSE) — Copyright (c) 2024 Alert Triage Agent contributors
