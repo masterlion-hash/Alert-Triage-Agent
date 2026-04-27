@@ -184,19 +184,25 @@ def _get_ram_gb() -> float:
 
 
 def _detect_gpu() -> tuple[bool, str]:
-    r = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-        capture_output=True, text=True)
-    if r.returncode == 0 and r.stdout.strip():
-        parts = r.stdout.strip().split(",")
-        name  = parts[0].strip()
-        vram  = parts[1].strip() if len(parts) > 1 else "?"
-        return True, f"NVIDIA {name} ({vram})"
-    if not IS_WIN:
-        r = subprocess.run(["rocm-smi", "--showproductname"],
-                           capture_output=True, text=True)
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True)
         if r.returncode == 0 and r.stdout.strip():
-            return True, "AMD ROCm GPU"
+            parts = r.stdout.strip().split(",")
+            name  = parts[0].strip()
+            vram  = parts[1].strip() if len(parts) > 1 else "?"
+            return True, f"NVIDIA {name} ({vram})"
+    except FileNotFoundError:
+        pass
+    if not IS_WIN:
+        try:
+            r = subprocess.run(["rocm-smi", "--showproductname"],
+                               capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                return True, "AMD ROCm GPU"
+        except FileNotFoundError:
+            pass
     return False, "none detected"
 
 
