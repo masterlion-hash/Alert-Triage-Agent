@@ -99,7 +99,7 @@ async def triage_recent_alerts(limit: int = 10) -> str:
     Returns a compact list with rule, severity, host, user, IPs, and alert_id.
     Use alert_id with investigate_alert to dig deeper.
     """
-    limit = max(1, min(int(limit), 50))
+    limit = max(1, min(int(limit), 500))
     logger.info("triage_recent_alerts(limit=%s)", limit)
     try:
         async with _elastic() as es:
@@ -575,7 +575,7 @@ footer a:hover { color: var(--accent); }
         <button class="btn-clear-dates" onclick="clearDates(event)">Clear dates</button>
       </div>
       <div class="fg"><label>Fetch limit</label>
-        <input type="number" id="limit" value="50" min="1" max="200">
+        <input type="number" id="limit" value="50" min="1" max="500">
       </div>
     </div>
 
@@ -666,14 +666,19 @@ health();
 
 // ── Fetch ──
 async function fetchAlerts() {
-  const limit = Math.max(1, Math.min(200, parseInt(document.getElementById('limit').value)||50));
+  const limit = Math.max(1, Math.min(500, parseInt(document.getElementById('limit').value)||50));
+  const from  = document.getElementById('fFrom').value;
+  const to    = document.getElementById('fTo').value;
   const btn = document.getElementById('fetchBtn');
   btn.disabled = true; btn.innerHTML = '<span style="opacity:.6">Fetching…</span>';
   setStatus('');
   document.getElementById('alerts').innerHTML = '';
   document.getElementById('emptyState').style.display = 'none';
   try {
-    const d = await (await fetch('/api/triage?limit=' + limit)).json();
+    let url = '/api/triage?limit=' + limit;
+    if (from) url += '&from_ts=' + encodeURIComponent(new Date(from).toISOString());
+    if (to)   url += '&to_ts='   + encodeURIComponent(new Date(to).toISOString());
+    const d = await (await fetch(url)).json();
     if (d.error) { setStatus('Error: ' + d.error); showEmpty('Error: ' + d.error); return; }
     allAlerts = (d.alerts || []).sort((a,b) => {
       const o = {critical:4,high:3,medium:2,low:1};
@@ -991,11 +996,19 @@ async def health() -> dict:
 
 
 @app.get("/api/triage")
-async def api_triage(limit: int = 10) -> JSONResponse:
-    limit = max(1, min(int(limit), 50))
+async def api_triage(
+    limit: int = 50,
+    from_ts: str | None = None,
+    to_ts: str | None = None,
+) -> JSONResponse:
+    limit = max(1, min(int(limit), 500))
     try:
         async with _elastic() as es:
-            raw = await es.fetch_open_alerts(limit=limit)
+            raw = await es.fetch_open_alerts(
+                limit=limit,
+                since_ts=from_ts or None,
+                until_ts=to_ts or None,
+            )
     except Exception as exc:
         logger.error("Triage failed: %s", exc, exc_info=True)
         return JSONResponse({"error": str(exc)}, status_code=500)

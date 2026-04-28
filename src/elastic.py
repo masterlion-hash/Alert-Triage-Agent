@@ -44,13 +44,27 @@ class ElasticClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self._client.aclose()
 
-    async def fetch_open_alerts(self, limit: int = 10) -> list[dict[str, Any]]:
+    async def fetch_open_alerts(
+        self,
+        limit: int = 10,
+        since_ts: str | None = None,
+        until_ts: str | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[dict[str, Any]] = [
+            {"term": {"kibana.alert.workflow_status": "open"}}
+        ]
+        if since_ts or until_ts:
+            ts_range: dict[str, str] = {}
+            if since_ts:
+                ts_range["gte"] = since_ts
+            if until_ts:
+                ts_range["lte"] = until_ts
+            filters.append({"range": {"@timestamp": ts_range}})
+
         body = {
             "size": limit,
             "sort": [{"@timestamp": {"order": "desc"}}],
-            "query": {"bool": {"filter": [
-                {"term": {"kibana.alert.workflow_status": "open"}}
-            ]}},
+            "query": {"bool": {"filter": filters}},
             "_source": [
                 "@timestamp",
                 "kibana.alert.rule.name",
