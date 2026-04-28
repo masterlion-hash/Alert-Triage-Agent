@@ -24,7 +24,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
+try:
+    from mcp.server.transport_security import TransportSecuritySettings as _TransportSecuritySettings
+    _mcp_ts = _TransportSecuritySettings(enable_dns_rebinding_protection=False)
+except ImportError:
+    _mcp_ts = None
 
 from config import config
 from src.ai_provider import build_provider
@@ -78,7 +82,7 @@ def _intel() -> ThreatIntelClient:
 # MCP server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+_mcp_kwargs: dict = dict(
     name="elastic-alert-triage",
     instructions=(
         "Investigation toolkit for Elastic Security alerts.\n"
@@ -88,8 +92,10 @@ mcp = FastMCP(
         "3. Use get_host_context, lookup_indicator, get_related_events for pivots."
     ),
     stateless_http=True,
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
+if _mcp_ts is not None:
+    _mcp_kwargs["transport_security"] = _mcp_ts
+mcp = FastMCP(**_mcp_kwargs)
 
 
 @mcp.tool()
@@ -99,7 +105,7 @@ async def triage_recent_alerts(limit: int = 10) -> str:
     Returns a compact list with rule, severity, host, user, IPs, and alert_id.
     Use alert_id with investigate_alert to dig deeper.
     """
-    limit = max(1, min(int(limit), 500))
+    limit = max(1, min(int(limit), 10000))
     logger.info("triage_recent_alerts(limit=%s)", limit)
     try:
         async with _elastic() as es:
@@ -575,7 +581,7 @@ footer a:hover { color: var(--accent); }
         <button class="btn-clear-dates" onclick="clearDates(event)">Clear dates</button>
       </div>
       <div class="fg"><label>Fetch limit</label>
-        <input type="number" id="limit" value="50" min="1" max="500">
+        <input type="number" id="limit" value="50" min="1" max="10000">
       </div>
     </div>
 
@@ -666,7 +672,7 @@ health();
 
 // ── Fetch ──
 async function fetchAlerts() {
-  const limit = Math.max(1, Math.min(500, parseInt(document.getElementById('limit').value)||50));
+  const limit = Math.max(1, Math.min(10000, parseInt(document.getElementById('limit').value)||50));
   const from  = document.getElementById('fFrom').value;
   const to    = document.getElementById('fTo').value;
   const btn = document.getElementById('fetchBtn');
@@ -939,7 +945,17 @@ function eA(s) {
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with mcp.session_manager.run():
+    _sm = getattr(mcp, "session_manager", None)
+    if _sm is not None:
+        async with _sm.run():
+            logger.info(
+                "MCP ready — /mcp | elastic=%s | abuseipdb=%s | virustotal=%s",
+                config.elastic_url,
+                "set" if config.abuseipdb_api_key else "NOT SET",
+                "set" if config.virustotal_api_key else "NOT SET",
+            )
+            yield
+    else:
         logger.info(
             "MCP ready — /mcp | elastic=%s | abuseipdb=%s | virustotal=%s",
             config.elastic_url,
@@ -1001,7 +1017,7 @@ async def api_triage(
     from_ts: str | None = None,
     to_ts: str | None = None,
 ) -> JSONResponse:
-    limit = max(1, min(int(limit), 500))
+    limit = max(1, min(int(limit), 10000))
     try:
         async with _elastic() as es:
             raw = await es.fetch_open_alerts(

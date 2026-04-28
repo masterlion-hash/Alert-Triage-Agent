@@ -549,18 +549,27 @@ def ensure_ollama(sysinfo: dict) -> bool:
 
 
 def _ensure_ollama_running() -> None:
-    r = subprocess.run(["ollama", "list"], capture_output=True, text=True,
-                       timeout=5)
+    try:
+        r = subprocess.run(["ollama", "list"], capture_output=True, text=True,
+                           timeout=5)
+    except FileNotFoundError:
+        warn("ollama not found in PATH — you may need to open a new terminal after install.")
+        return
     if r.returncode == 0:
         return
     print(f"   Starting Ollama server …", end=" ", flush=True)
-    if IS_WIN:
-        subprocess.Popen(["ollama", "serve"],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        subprocess.Popen(["ollama", "serve"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        if IS_WIN:
+            subprocess.Popen(["ollama", "serve"],
+                             creationflags=subprocess.CREATE_NEW_CONSOLE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["ollama", "serve"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        print(yellow("not found"))
+        warn("Start Ollama manually:  ollama serve")
+        return
     time.sleep(3)
     print(green("started"))
 
@@ -579,7 +588,10 @@ def _pull_model(tag: str) -> bool:
 
 
 def _model_already_local(tag: str) -> bool:
-    out = run(["ollama", "list"], check=False)
+    try:
+        out = run(["ollama", "list"], check=False)
+    except FileNotFoundError:
+        return False
     return tag.split(":")[0] in out
 
 
