@@ -34,6 +34,9 @@ class Config:
 
     # AI verdict backend — set AI_PROVIDER to: claude | ollama | openai_compat | none
     ai_provider: str = os.getenv("AI_PROVIDER", "none")
+    # Per-request timeout (seconds) for verdict generation. Local models on
+    # CPU-only hardware may need 5+ minutes for the first response.
+    ai_timeout: int = int(os.getenv("AI_TIMEOUT", "180"))
 
     # Claude (AI_PROVIDER=claude)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")

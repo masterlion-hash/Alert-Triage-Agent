@@ -943,25 +943,31 @@ function eA(s) {
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+async def _log_startup_status() -> None:
+    logger.info(
+        "MCP ready — /mcp | elastic=%s | abuseipdb=%s | virustotal=%s",
+        config.elastic_url,
+        "set" if config.abuseipdb_api_key else "NOT SET",
+        "set" if config.virustotal_api_key else "NOT SET",
+    )
+    try:
+        ok, detail = await ai_provider.health_check()
+    except Exception as exc:
+        ok, detail = False, f"health check raised {exc}"
+    level = logger.info if ok else logger.warning
+    level("AI backend (%s): %s — %s", ai_provider.name,
+          "OK" if ok else "NOT READY", detail)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     _sm = getattr(mcp, "session_manager", None)
     if _sm is not None:
         async with _sm.run():
-            logger.info(
-                "MCP ready — /mcp | elastic=%s | abuseipdb=%s | virustotal=%s",
-                config.elastic_url,
-                "set" if config.abuseipdb_api_key else "NOT SET",
-                "set" if config.virustotal_api_key else "NOT SET",
-            )
+            await _log_startup_status()
             yield
     else:
-        logger.info(
-            "MCP ready — /mcp | elastic=%s | abuseipdb=%s | virustotal=%s",
-            config.elastic_url,
-            "set" if config.abuseipdb_api_key else "NOT SET",
-            "set" if config.virustotal_api_key else "NOT SET",
-        )
+        await _log_startup_status()
         yield
 
 
@@ -1008,7 +1014,17 @@ async def health() -> dict:
             "abuseipdb": bool(config.abuseipdb_api_key),
             "virustotal": bool(config.virustotal_api_key),
         },
+        "ai_provider": ai_provider.name,
     }
+
+
+@app.get("/api/ai/health")
+async def ai_health() -> JSONResponse:
+    try:
+        ok, detail = await ai_provider.health_check()
+    except Exception as exc:
+        ok, detail = False, f"health check raised {exc}"
+    return JSONResponse({"ok": ok, "provider": ai_provider.name, "detail": detail})
 
 
 @app.get("/api/triage")

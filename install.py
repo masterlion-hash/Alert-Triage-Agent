@@ -557,6 +557,19 @@ def _ensure_ollama_running() -> None:
         return
     if r.returncode == 0:
         return
+
+    # Prefer systemd on Linux so the daemon survives this installer exiting.
+    if not IS_WIN and shutil.which("systemctl"):
+        print(f"   Enabling ollama systemd service …", end=" ", flush=True)
+        svc = subprocess.run(
+            ["sudo", "systemctl", "enable", "--now", "ollama"],
+            capture_output=True, text=True)
+        if svc.returncode == 0:
+            print(green("started"))
+            time.sleep(2)
+            return
+        print(yellow("skipped"))
+
     print(f"   Starting Ollama server …", end=" ", flush=True)
     try:
         if IS_WIN:
@@ -564,8 +577,12 @@ def _ensure_ollama_running() -> None:
                              creationflags=subprocess.CREATE_NEW_CONSOLE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            subprocess.Popen(["ollama", "serve"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # start_new_session detaches from this Python process so the
+            # daemon survives after the installer exits.
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
     except FileNotFoundError:
         print(yellow("not found"))
         warn("Start Ollama manually:  ollama serve")
@@ -585,6 +602,47 @@ def _pull_model(tag: str) -> bool:
         return True
     warn(f"Pull returned non-zero. Pull manually later: {cyan('ollama pull ' + tag)}")
     return False
+
+
+def _smoke_test_ollama(url: str, tag: str) -> None:
+    """Quick chat call to confirm the model actually loads + responds."""
+    print(f"\n   Testing {bold(tag)} via Ollama API …", end=" ", flush=True)
+    body = json.dumps({
+        "model": tag,
+        "stream": False,
+        "messages": [{"role": "user", "content": "ping"}],
+    }).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/api/chat",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read())
+        if (data.get("message") or {}).get("content"):
+            print(green("ok"))
+            return
+        print(yellow("empty response"))
+        warn(f"Ollama responded but message was empty: {data}")
+    except urllib.error.HTTPError as e:
+        print(yellow(f"HTTP {e.code}"))
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        if e.code == 404:
+            warn(f"Model `{tag}` is not pulled. Run:  ollama pull {tag}")
+        else:
+            warn(f"Ollama error: {detail or e}")
+    except urllib.error.URLError as e:
+        print(yellow("unreachable"))
+        warn(f"Could not reach Ollama at {url}: {e.reason}")
+        warn("Start it with:  ollama serve")
+    except Exception as exc:
+        print(yellow("failed"))
+        warn(f"Smoke test failed: {exc}")
 
 
 def _model_already_local(tag: str) -> bool:
@@ -774,9 +832,33 @@ def setup_ai(sysinfo: dict, env: dict[str, str]) -> None:
     elif ai == "claude":
         _setup_claude_ai(env)
     elif ai == "openai_compat":
-        env["OPENAI_COMPAT_URL"]   = ask("API base URL", "http://localhost:1234/v1")
-        env["OPENAI_COMPAT_KEY"]   = ask("API key (blank if none)", required=False)
-        env["OPENAI_COMPAT_MODEL"] = ask("Model name", "mistral")
+        _setup_openai_compat(env)
+
+
+def _setup_openai_compat(env: dict[str, str]) -> None:
+    env["OPENAI_COMPAT_URL"]   = ask("API base URL (must include /v1)",
+                                     "http://localhost:1234/v1")
+    env["OPENAI_COMPAT_KEY"]   = ask("API key (blank if none)", required=False)
+    env["OPENAI_COMPAT_MODEL"] = ask("Model name", "mistral")
+
+    print(f"\n   Testing API …", end=" ", flush=True)
+    req = urllib.request.Request(
+        env["OPENAI_COMPAT_URL"].rstrip("/") + "/models",
+        headers=({"Authorization": f"Bearer {env['OPENAI_COMPAT_KEY']}"}
+                 if env["OPENAI_COMPAT_KEY"] else {}),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read()
+        print(green("reachable"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            print(yellow(f"HTTP {e.code} — check API key"))
+        else:
+            print(yellow(f"HTTP {e.code}"))
+    except Exception as exc:
+        print(yellow(f"unreachable — {exc}"))
+        warn("Verdicts will fail until the backend is up. Continuing anyway.")
 
 
 def _configure_ollama(sysinfo: dict, env: dict[str, str]) -> None:
@@ -795,9 +877,7 @@ def _configure_ollama(sysinfo: dict, env: dict[str, str]) -> None:
         if fallback == "claude":
             _setup_claude_ai(env)
         elif fallback == "openai_compat":
-            env["OPENAI_COMPAT_URL"]   = ask("API base URL", "http://localhost:1234/v1")
-            env["OPENAI_COMPAT_KEY"]   = ask("API key (blank if none)", required=False)
-            env["OPENAI_COMPAT_MODEL"] = ask("Model name", "mistral")
+            _setup_openai_compat(env)
         return
 
     hdr("Choose your AI model")
@@ -821,14 +901,19 @@ def _configure_ollama(sysinfo: dict, env: dict[str, str]) -> None:
     print()
 
     _ensure_ollama_running()
+    pulled = True
     if _model_already_local(chosen):
         ok(f"Model {bold(chosen)} already downloaded — nothing to pull")
     else:
         if ask_yn(f"Download {bold(chosen)} now?", default=True):
-            _pull_model(chosen)
+            pulled = _pull_model(chosen)
         else:
+            pulled = False
             warn(f"Not downloaded. Pull later:  {cyan('ollama pull ' + chosen)}")
             warn(f"The server won't give AI verdicts until the model is available.")
+
+    if pulled:
+        _smoke_test_ollama(env["OLLAMA_URL"], chosen)
 
 
 # ── Threat intel, server, assets ──────────────────────────────────────────────
@@ -894,6 +979,8 @@ def write_env(env: dict[str, str]) -> None:
         "",
         "# AI backend: claude | ollama | openai_compat | none",
         f"AI_PROVIDER={ai}",
+        "# Per-request timeout (seconds). Raise for slow local models.",
+        f"AI_TIMEOUT={env.get('AI_TIMEOUT', '180')}",
     ]
     if ai == "claude":
         lines += [f"ANTHROPIC_API_KEY={env.get('ANTHROPIC_API_KEY', '')}",
