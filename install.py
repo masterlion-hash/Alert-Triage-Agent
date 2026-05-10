@@ -1046,7 +1046,6 @@ def install_service(port: str) -> None:
 
 
 def _systemd() -> None:
-    svc = pathlib.Path("/etc/systemd/system/alert-triage.service")
     content = (
         "[Unit]\nDescription=Alert Triage Agent\nAfter=network.target\n\n"
         "[Service]\nType=simple\n"
@@ -1054,31 +1053,64 @@ def _systemd() -> None:
         f"ExecStart={VENV_PY} server.py\nRestart=on-failure\nRestartSec=5\n\n"
         "[Install]\nWantedBy=multi-user.target\n"
     )
+    tmp = pathlib.Path(tempfile.gettempdir()) / "alert-triage.service"
+    tmp.write_text(content, encoding="utf-8")
+
+    if not shutil.which("systemctl"):
+        warn("systemctl not found — skipping service install.")
+        print(f"   Unit file written to {cyan(str(tmp))}")
+        return
+
+    # Check that systemd is actually running (containers, WSL1, etc. may
+    # have systemctl but no init).
+    probe = subprocess.run(["systemctl", "is-system-running"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0 and "running" not in (probe.stdout + probe.stderr).lower():
+        warn("systemd is not running on this host — skipping service install.")
+        print(f"   Unit file written to {cyan(str(tmp))}")
+        return
+
+    svc = pathlib.Path("/etc/systemd/system/alert-triage.service")
     try:
         svc.write_text(content, encoding="utf-8")
-        run(["systemctl", "daemon-reload"])
-        run(["systemctl", "enable", "--now", "alert-triage"])
-        ok("systemd service installed and started")
+        wrote_directly = True
     except PermissionError:
-        tmp = pathlib.Path(tempfile.gettempdir()) / "alert-triage.service"
-        tmp.write_text(content, encoding="utf-8")
+        wrote_directly = False
+
+    if not wrote_directly:
         warn("Need sudo to install the service. Run:")
-        print(f"\n   {cyan(f'sudo cp {tmp} /etc/systemd/system/')}")
+        print(f"\n   {cyan(f'sudo cp {tmp} /etc/systemd/system/alert-triage.service')}")
         print(f"   {cyan('sudo systemctl daemon-reload')}")
         print(f"   {cyan('sudo systemctl enable --now alert-triage')}\n")
+        return
+
+    for cmd in (["systemctl", "daemon-reload"],
+                ["systemctl", "enable", "--now", "alert-triage"]):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            warn(f"`{' '.join(cmd)}` failed: {r.stderr.strip() or r.stdout.strip()}")
+            warn("Service file is in place — fix the issue and re-run the systemctl commands.")
+            return
+    ok("systemd service installed and started")
 
 
 def _task_scheduler() -> None:
     task = "AlertTriageAgent"
-    try:
-        subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"],
-                       capture_output=True)
-        run(["schtasks", "/Create", "/TN", task,
-             "/TR", f'"{VENV_PY}" "{ROOT / "server.py"}"',
-             "/SC", "ONLOGON", "/RL", "HIGHEST", "/F"])
+    if not shutil.which("schtasks"):
+        warn("schtasks not found — cannot create scheduled task here.")
+        warn(f"Start manually: {cyan('start.bat')}")
+        return
+    subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"],
+                   capture_output=True)
+    r = subprocess.run(
+        ["schtasks", "/Create", "/TN", task,
+         "/TR", f'"{VENV_PY}" "{ROOT / "server.py"}"',
+         "/SC", "ONLOGON", "/RL", "HIGHEST", "/F"],
+        capture_output=True, text=True)
+    if r.returncode == 0:
         ok(f"Windows Task Scheduler entry '{task}' created (runs at logon)")
-    except Exception as exc:
-        warn(f"Could not create scheduled task: {exc}")
+    else:
+        warn(f"Could not create scheduled task: {r.stderr.strip() or r.stdout.strip()}")
         warn(f"Start manually: {cyan('start.bat')}")
 
 
